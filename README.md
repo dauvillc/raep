@@ -51,7 +51,7 @@ paragraphs = soup.find_all('p')
 
 Now, < p > objects do not always directly contain their text in their ```.string``` attribute.  
 Instead, the full text contained within a p element and recursively in its children can be obtained via ```get_text()```.  
-We'll thus set the ```string``Now, < p > objects do not always directly contain their text in their .string attribute.
+Now, < p > objects do not always directly contain their text in their .string attribute.
 Instead, the full text contained within a p element and recursively in its children can be obtained via get_text().
 We'll thus set the string attribute to the value of get_text(), and then remove all children, and this for all < p > tags.` attribute to the value of ```get_text()```, and then remove all children, and this for all
 < p > tags.  
