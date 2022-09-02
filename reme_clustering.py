@@ -10,6 +10,8 @@ complexe document option.
 import numpy as np
 import re
 import os
+import pandas as pd
+from collections import defaultdict
 from bs4 import BeautifulSoup, NavigableString
 from matplotlib import cm
 from sklearn.cluster import AgglomerativeClustering
@@ -21,6 +23,8 @@ from sklearn.cluster import AgglomerativeClustering
 HTML_PAGES_REP = os.path.join("docs", "html_pages")
 # Directory of the new HTML pages over which the clusters have been drawed
 NEW_HTML_REP = "visu_docs"
+# Path into which the data is saved
+SAVE_PATH = os.path.join("docs", "reme_data.json")
 # Whether to draw the clusters on a new HTML file
 DRAW_CLUSTERS = True
 
@@ -77,11 +81,13 @@ def page_p_elements(p_objects, draw_clusters=False):
             for elem in cluster:
                 elem['style'] += ";background-color:rgba({}, {}, {}, 0.3);".format(*color)
 
-    return pred
+    return clusters
 
 
 if __name__ == "__main__":
-    # Apply the clustering to every page
+    # List that will contain the data for each page
+    pages_data = []
+    # We process the document page per page
     for k, page_path in enumerate(sorted(os.listdir(HTML_PAGES_REP))):
         print(f"Reading HTML file {page_path}")
         with open(os.path.join(HTML_PAGES_REP, page_path), "r") as page_html:
@@ -160,7 +166,111 @@ if __name__ == "__main__":
         # Performs the clustering
         clusters = page_p_elements(p_elements, draw_clusters=DRAW_CLUSTERS)
 
+        # If less than 5 clusters have been detected, then it's not a job sheet page
+        # but a new chapter title page. We just skip it.
+        if len(clusters) < 5:
+            continue
+
         # Save the new HTML file over which the clusters have been drawed
         with open(os.path.join(NEW_HTML_REP, page_path), "w") as file:
             file.write(str(soup))
-    print("Done")
+
+        # =========== SECOND PART: PROCESSING THE CLUSTERS ======================= #
+        # ------------ BUILDING A SPATIAL REPRESENTATION ------------------------- #
+        # We'll need to order the clusters list by ascending top coordinate. The top
+        # coordinate of a cluster is that of the top-most paragraph within it.
+        cluster_coords = []
+        for cluster in clusters:
+            par_coords = [get_pos(par) for par in cluster]
+            top = min((x for x, y in par_coords))
+            left = min((y for x, y in par_coords))
+            cluster_coords.append((top, left))
+
+        sorted_clusters_and_coords = [(cluster, top, left) for cluster, (top, left) in zip(clusters, cluster_coords)]
+        # Sorts the list (cluster, top, left) by the 'top' element in ascending order
+        sorted_clusters_and_coords = sorted(sorted_clusters_and_coords,
+                                            key=lambda cluster_and_coords: cluster_and_coords[1])
+        # Rebuilds the clusters and cluster_coords list, this time in the right order
+        clusters = [cluster for cluster, _, _ in sorted_clusters_and_coords]
+        cluster_coords = [(top, left) for _, top, left in sorted_clusters_and_coords]
+
+        # ---------- IDENTIFYING SECTIONS ----------------------------------------- #
+        # This is the part where we associate each cluster with a known section of the sheets
+        # We begin by reading a file that contains the names of every section we could find
+        with open('docs/sections.txt', 'r') as sections_file:
+            sections = [line.strip() for line in sections_file]
+        # map Section name --> cluster
+        sections_dict = dict()
+
+        # ---- Identifying by occurence of the section name ----- #
+        # Here we try to find the names of the sections within the clusters' text.
+        for cluster in clusters:
+            for par in cluster:
+                text = par.get_text()
+                for section_name in sections:
+                    if section_name in text:
+                        sections_dict[section_name] = cluster
+                        # Removes the section name from the text of the cluster
+                        par.string = par.string.replace(section_name, '')
+                        # Note: the <p> tag still exists in the cluster, so its location will
+                        # be taken into account to compute the location of the cluster in the
+                        # next part of the process
+
+        # ---- Identifying by location on the page ----- #
+        sections_dict['chapitre'] = clusters[0]
+        sections_dict['nom du métier'] = clusters[1]
+        sections_dict['description'] = clusters[3]
+
+        # ---- 'Activités principales' section ---- #
+        if 'activités principales' in sections_dict:
+            # Browses the clusters list (which is still ordered by ascending top coordinate)
+            # until finding the title "activités principales"
+            for k, cluster in enumerate(clusters):
+                if cluster == sections_dict['activités principales']:
+                    activ_title_cluster = k
+                    break
+            # Merges the two content clusters into one
+            sections_dict['activités principales'] = clusters[k + 1] + clusters[k + 2]
+
+        # ---- Merging the text of paragraphs ---- #
+        sections_text = dict()
+        for section_name, cluster in sections_dict.items():
+            cluster_text = ""
+            for par in cluster:
+                cluster_text += par.string + ' '
+            sections_text[section_name] = cluster_text
+
+        # ----------- Extracting the list items -------------- #
+        # Map to automatically retrieve the right separator for a given
+        # section
+        separator = defaultdict(lambda: '•')
+        separator['activités principales'] = '◗'
+        separator['correspondances statutaires'] = ','
+
+        # Converts the text of every section into a list
+        section_lists = dict()
+        for section_name, section_text in sections_text.items():
+            # Cleaning:
+            # We'll remove some undesirable special characters
+            for char in ['➜', '[', ']']:
+                section_text = section_text.replace(char, '')
+            # We'll change the double spaces to simple whitespaces
+            section_text = section_text.replace('  ', ' ')
+
+            items = section_text.split(separator[section_name])
+            # Removes empty list items
+            items = [item.lstrip().strip() for item in items]
+            items = [item for item in items if len(item) > 0]
+            section_lists[section_name] = items
+
+        pages_data.append(section_lists)
+
+    # Converts to a pandas dataframe
+    df = pd.DataFrame(pages_data)
+    # Some sections shouldn't be lists but rather single strings
+    nonlist_sections = ['code fiche', 'description', 'nom du métier', 'chapitre']
+    df[nonlist_sections] = df[nonlist_sections].applymap(lambda items: items[0])
+    # Merges the data from the first and second pages that correspond to the same job
+    df = df.groupby('code fiche').first().reset_index()
+    df.to_json(SAVE_PATH)
+    print("Done, saved to ", SAVE_PATH)
