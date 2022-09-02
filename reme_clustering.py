@@ -34,8 +34,10 @@ def get_pos(p_object):
     Retrieves the position of a <p> element from its style attribute.
     Returns a pair (top, left) in pixels.
     """
-    top, left = re.findall('[0-9]+', p_object.attrs['style'])
-    return int(top), int(left)
+    top, left = re.findall('[0-9]+px', p_object.attrs['style'])
+    # "top" and "left" are now strings such as "1024px", "681px", but we want to
+    # ignore the "px" part
+    return int(top[:-2]), int(left[:-2])
 
 
 def page_p_elements(p_objects, draw_clusters=False):
@@ -151,6 +153,9 @@ if __name__ == "__main__":
         # -- Replaces all &nbsp characters with traditional whitespaces
         for par in p_elements:
             par.string = par.string.replace(u'\xa0', ' ')
+        # -- Converts the text to lowercase
+        for par in p_elements:
+            par.string = par.string.lower()
 
         # Performs the clustering
         clusters = page_p_elements(p_elements, draw_clusters=DRAW_CLUSTERS)
